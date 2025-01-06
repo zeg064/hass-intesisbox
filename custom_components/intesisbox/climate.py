@@ -92,7 +92,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     controller = intesisbox.IntesisBox(config[CONF_HOST], loop=hass.loop)
     controller.connect()
     while not controller.is_connected:
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(5)
 
     name = config.get(CONF_NAME)
     unique_id = config.get(CONF_UNIQUE_ID)
