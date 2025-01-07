@@ -76,18 +76,18 @@ class IntesisBox(asyncio.Protocol):
         while self.is_connected:
             _LOGGER.debug("Sending keepalive")
             self._write("PING")
-            await asyncio.sleep(45)
+            await asyncio.sleep(10)
         else:
-            _LOGGER.debug("Not connected, skipping keepalive")
+            _LOGGER.error("WMP - Not connected, skipping keepalive")
 
     async def poll_ambtemp(self):
         """Retrieve Ambient Temperature to prevent integration timeouts."""
         while self.is_connected:
-            _LOGGER.debug("Sending AMBTEMP")
+            _LOGGER.debug("Retrieving AMBTEMP")
             self._write("GET,1:AMBTEMP")
-            await asyncio.sleep(10)
+            await asyncio.sleep(40)
         else:
-            _LOGGER.debug("Not connected, skipping Ambient Temp Request")
+            _LOGGER.error("Not connected, skipping Ambient Temp Request")
 
     async def query_initial_state(self):
         """Fetch configuration from the device upon connection."""
@@ -216,7 +216,7 @@ class IntesisBox(asyncio.Protocol):
                     _LOGGER.debug(
                         "Opening connection to IntesisBox %s:%s", self._ip, self._port
                     )
-                    _ = ensure_future(coro, loop=self._eventLoop)
+                    _ = asyncio.ensure_future(coro, loop=self._eventLoop)
                 else:
                     _LOGGER.debug("Missing IP address or port.")
                     self._connectionStatus = API_DISCONNECTED
@@ -225,7 +225,7 @@ class IntesisBox(asyncio.Protocol):
                 _LOGGER.error("%s Exception. %s / %s", type(e), repr(e.args), e)
                 self._connectionStatus = API_DISCONNECTED
         else:
-            _LOGGER.debug("connect() called but already connecting")
+            _LOGGER.error("connect() called but already connecting")
 
     def stop(self):
         """Public method for shutting down connectivity with the envisalink."""
