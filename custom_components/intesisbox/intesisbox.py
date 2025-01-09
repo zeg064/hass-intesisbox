@@ -224,8 +224,14 @@ class IntesisBox(asyncio.Protocol):
             except Exception as e:
                 _LOGGER.error("%s Exception. %s / %s", type(e), repr(e.args), e)
                 self._connectionStatus = API_DISCONNECTED
-        else:
-            _LOGGER.error("connect() called but already connecting")
+        elif self._connectionStatus == API_CONNECTING:
+            _LOGGER.warning("connect() called but already connecting")
+            if self._transport.is_closing():
+                _LOGGER.debug("Socket is closing while trying to connect. Force reconnection")
+                self._connectionStatus = API_DISCONNECTED
+                self._transport.close()
+                self._send_update_callback()
+
 
     def stop(self):
         """Public method for shutting down connectivity with the envisalink."""
