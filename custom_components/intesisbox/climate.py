@@ -241,7 +241,7 @@ class IntesisBoxAC(ClimateEntity):
             if self._target_temperature:
                 self._controller.set_temperature(self._target_temperature)
 
-        self.hass.async_add_executor_job(self.schedule_update_ha_state, False)
+        self.hass.async_create_task(self.schedule_update_ha_state(False))
 
     def turn_on(self):
         """Turn thermostat on."""
