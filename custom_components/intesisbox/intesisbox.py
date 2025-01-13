@@ -74,11 +74,11 @@ class IntesisBox(asyncio.Protocol):
     async def keep_alive(self):
         """Send a keepalive command to reset it's watchdog timer."""
         while self.is_connected:
-            _LOGGER.debug("Sending keepalive")
+            _LOGGER.debug("Sending PING")
             self._write("PING")
             await asyncio.sleep(10)
         else:
-            _LOGGER.error("WMP - Not connected, skipping keepalive")
+            _LOGGER.error("Not connected, skipping PING")
 
     async def poll_ambtemp(self):
         """Retrieve Ambient Temperature to prevent integration timeouts."""
@@ -199,7 +199,8 @@ class IntesisBox(asyncio.Protocol):
     def connection_lost(self, exc):
         """Asyncio callback for a lost TCP connection."""
         self._connectionStatus = API_DISCONNECTED
-        _LOGGER.info("The server closed the connection")
+        _LOGGER.info("The server closed the connection, try reconnection")
+        self._transport.close()
         self._send_update_callback()
 
     def connect(self):
