@@ -70,6 +70,7 @@ class IntesisBox(asyncio.Protocol):
         _LOGGER.debug("Connected to IntesisBox")
         self._transport = transport
         _ = asyncio.ensure_future(self.query_initial_state())
+        _ = asyncio.ensure_future(self.keep_alive())
 
     async def keep_alive(self):
         """Send a keepalive command to reset it's watchdog timer."""
