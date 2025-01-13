@@ -111,7 +111,7 @@ class IntesisBox(asyncio.Protocol):
         """Async write to slow down commands and await response from units."""
         self._transport.write(f"{cmd}\r".encode("ascii"))
         _LOGGER.debug(f"Data sent: {cmd!r}")
-        await asyncio.sleep(1)
+        await asyncio.sleep(2)
 
     def data_received(self, data):
         """Asyncio callback when data is received on the socket."""
@@ -201,12 +201,14 @@ class IntesisBox(asyncio.Protocol):
         self._connectionStatus = API_DISCONNECTED
         _LOGGER.info("The server closed the connection, try reconnection")
         self._transport.close()
+        _LOGGER.debug("Transport closed")
         self._send_update_callback()
-
+    
     def connect(self):
         """Public method for connecting to IntesisHome API."""
         if self._connectionStatus == API_DISCONNECTED:
             self._connectionStatus = API_CONNECTING
+            _LOGGER.debug("Connection method commenced")
             try:
                 # Must poll to get the authentication token
                 if self._ip and self._port:
