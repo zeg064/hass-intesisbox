@@ -72,15 +72,15 @@ class IntesisBox(asyncio.Protocol):
         _ = asyncio.ensure_future(self.query_initial_state())
 
     async def keep_alive(self):
-    """Send a keepalive command to reset its watchdog timer."""
-    while True:
-        if self.is_connected:
-            _LOGGER.debug("Sending PING")
-            self._write("PING")
-            await asyncio.sleep(10)
-        else:
-            _LOGGER.error("Not connected, skipping PING")
-            await asyncio.sleep(5)  # Wait 5 seconds before retrying
+        """Send a keepalive command to reset its watchdog timer."""
+        while True:
+            if self.is_connected:
+                _LOGGER.debug("Sending PING")
+                self._write("PING")
+                await asyncio.sleep(10)
+            else:
+                _LOGGER.error("Not connected, skipping PING")
+                await asyncio.sleep(5)  # Wait 5 seconds before retrying
             
     async def poll_ambtemp(self):
         """Retrieve Ambient Temperature to prevent integration timeouts."""
