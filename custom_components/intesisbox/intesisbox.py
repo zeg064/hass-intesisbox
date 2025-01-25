@@ -84,10 +84,11 @@ class IntesisBox(asyncio.Protocol):
               if ping_count >= 10:
                 _LOGGER.error("Ping failed 10 times")
                 ping_count = 0
+                await asyncio.sleep(5) 
               else:
                 _LOGGER.debug("Not connected, skipping PING")
                 ping_count = ping_count + 1
-                time.sleep(5)  # Sleep 5 seconds before retrying
+                await asyncio.sleep(5)  # Wait 5 seconds before retrying
             
     async def poll_ambtemp(self):
         """Retrieve Ambient Temperature to prevent integration timeouts."""
