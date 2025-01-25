@@ -6,6 +6,7 @@ import asyncio
 from asyncio import BaseTransport, ensure_future
 from collections.abc import Callable
 import logging
+import time
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -73,14 +74,20 @@ class IntesisBox(asyncio.Protocol):
 
     async def keep_alive(self):
         """Send a keepalive command to reset its watchdog timer."""
+        ping_count = 0
         while True:
             if self.is_connected:
                 _LOGGER.debug("Sending PING")
                 self._write("PING")
                 await asyncio.sleep(10)
             else:
-                _LOGGER.error("Not connected, skipping PING")
-                await asyncio.sleep(5)  # Wait 5 seconds before retrying
+              if ping_count >= 10:
+                _LOGGER.error("Ping failed 10 times")
+                ping_count = 0
+              else:
+                _LOGGER.debug("Not connected, skipping PING")
+                ping_count = ping_count + 1
+                time.sleep(5)  # Sleep 5 seconds before retrying
             
     async def poll_ambtemp(self):
         """Retrieve Ambient Temperature to prevent integration timeouts."""
