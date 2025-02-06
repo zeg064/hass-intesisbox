@@ -37,12 +37,6 @@ FUNCTION_ERRCODE = "ERRCODE"
 
 NULL_VALUES = ["-32768", "32768"]
 
-PING_INTERVAL = 10
-PING_FAILURE_THRESHOLD = 10
-POLL_INTERVAL = 60 * 5
-RECONNECT_DELAY = 5
-CONNECTION_TIMEOUT = 10
-
 
 class IntesisBox(asyncio.Protocol):
     """Handles communication with an intesisbox device via WMP."""
@@ -85,16 +79,16 @@ class IntesisBox(asyncio.Protocol):
             if self.is_connected:
                 _LOGGER.debug("Sending PING")
                 self._write("PING")
-                await asyncio.sleep(PING_INTERVAL)
+                await asyncio.sleep(10)
             else:
-                if ping_count >= PING_FAILURE_THRESHOLD:
-                    _LOGGER.error("Ping failed %d times", PING_FAILURE_THRESHOLD)
-                    ping_count = 0
-                    await asyncio.sleep(RECONNECT_DELAY)
-                else:
-                    _LOGGER.debug("Not connected, skipping PING")
-                    ping_count += 1
-                    await asyncio.sleep(RECONNECT_DELAY)
+              if ping_count >= 10:
+                _LOGGER.error("Ping failed 10 times")
+                ping_count = 0
+                await asyncio.sleep(5) 
+              else:
+                _LOGGER.debug("Not connected, skipping PING")
+                ping_count = ping_count + 1
+                await asyncio.sleep(5)  # Wait 5 seconds before retrying
             
     async def poll_ambtemp(self):
         """Retrieve Ambient Temperature to prevent integration timeouts."""
@@ -221,13 +215,25 @@ class IntesisBox(asyncio.Protocol):
         _LOGGER.debug("Transport closed")
         self._send_update_callback()
     
-    async def connect(self):
+    def connect(self):
         """Public method for connecting to IntesisHome API."""
         if self._connectionStatus == API_DISCONNECTED:
             self._connectionStatus = API_CONNECTING
             _LOGGER.debug("Connection method commenced")
             try:
-               await self._attempt_connection()
+                # Must poll to get the authentication token
+                if self._ip and self._port:
+                    # Create asyncio socket
+                    coro = self._eventLoop.create_connection(
+                        lambda: self, self._ip, self._port
+                    )
+                    _LOGGER.debug(
+                        "Opening connection to IntesisBox %s:%s", self._ip, self._port
+                    )
+                    _ = asyncio.ensure_future(coro, loop=self._eventLoop)
+                else:
+                    _LOGGER.debug("Missing IP address or port.")
+                    self._connectionStatus = API_DISCONNECTED
             except Exception as e:
                 _LOGGER.error("%s Exception. %s / %s", type(e), repr(e.args), e)
                 self._connectionStatus = API_DISCONNECTED
@@ -239,15 +245,6 @@ class IntesisBox(asyncio.Protocol):
                 self._transport.close()
                 self._send_update_callback()
 
-    async def _attempt_connection(self):
-        """Helper method to attempt connection to IntesisBox."""
-        if self._ip and self._port:
-            _LOGGER.debug("Opening connection to IntesisBox %s:%s", self._ip, self._port)
-            coro = self._eventLoop.create_connection(lambda: self, self._ip, self._port)
-            await asyncio.wait_for(coro, timeout=CONNECTION_TIMEOUT)
-        else:
-            _LOGGER.debug("Missing IP address or port.")
-            self._connectionStatus = API_DISCONNECTED
 
     def stop(self):
         """Public method for shutting down connectivity with the envisalink."""
@@ -259,7 +256,7 @@ class IntesisBox(asyncio.Protocol):
         while self.is_connected:
             _LOGGER.debug("Polling for update")
             self._write("GET,1:*")
-            await asyncio.sleep(POLL_INTERVAL)  # 5 minutes
+            await asyncio.sleep(60 * 5)  # 5 minutes
         else:
             _LOGGER.debug("Not connected, skipping poll_status()")
 
