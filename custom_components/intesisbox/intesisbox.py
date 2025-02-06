@@ -221,7 +221,7 @@ class IntesisBox(asyncio.Protocol):
         _LOGGER.debug("Transport closed")
         self._send_update_callback()
     
-   async def connect(self):
+    async def connect(self):
         """Public method for connecting to IntesisHome API."""
         if self._connectionStatus == API_DISCONNECTED:
             self._connectionStatus = API_CONNECTING
