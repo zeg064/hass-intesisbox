@@ -228,9 +228,12 @@ class IntesisBox(asyncio.Protocol):
         # Cancel running tasks
         self._cancel_tasks()
         
-        # Trigger automatic reconnection
+        # Trigger automatic reconnection (prevent multiple concurrent attempts)
         if not self._reconnect_task or self._reconnect_task.done():
+            _LOGGER.debug("Starting new reconnection task")
             self._reconnect_task = asyncio.create_task(self._auto_reconnect())
+        else:
+            _LOGGER.debug("Reconnection task already running, skipping")
         
         self._send_update_callback()
     
@@ -257,13 +260,9 @@ class IntesisBox(asyncio.Protocol):
                 _LOGGER.error("%s Exception. %s / %s", type(e), repr(e.args), e)
                 self._connectionStatus = API_DISCONNECTED
         elif self._connectionStatus == API_CONNECTING:
-            _LOGGER.warning("connect() called but already connecting")
-            # Remove race condition - check transport exists and is valid
-            if self._transport and self._transport.is_closing():
-                _LOGGER.info("Socket is closing while trying to connect. Force reconnection")
-                self._connectionStatus = API_DISCONNECTED
-                self._transport.close()
-                self._send_update_callback()
+            _LOGGER.debug("connect() called but already connecting - ignoring")
+        elif self._connectionStatus == API_AUTHENTICATED:
+            _LOGGER.debug("connect() called but already connected - ignoring")
 
 
     def stop(self):
@@ -495,6 +494,8 @@ class IntesisBox(asyncio.Protocol):
 
     async def _auto_reconnect(self):
         """Automatically attempt to reconnect with exponential backoff."""
+        _LOGGER.debug("Auto-reconnect task started")
+        
         while self._connectionStatus == API_DISCONNECTED and self._reconnect_attempts < self._max_reconnect_attempts:
             self._reconnect_attempts += 1
             
@@ -506,25 +507,40 @@ class IntesisBox(asyncio.Protocol):
             _LOGGER.info("Attempting reconnection #%d in %.1f seconds", self._reconnect_attempts, delay)
             await asyncio.sleep(delay)
             
+            # Double-check we're still disconnected after the delay
             if self._connectionStatus == API_DISCONNECTED:
                 _LOGGER.info("Reconnection attempt #%d", self._reconnect_attempts)
+                
+                # Ensure we're truly disconnected before attempting to connect
+                if self._transport:
+                    self._transport.close()
+                    self._transport = None
+                
                 self.connect()
                 
                 # Wait up to 10 seconds for connection to establish
-                for _ in range(100):  # 100 * 0.1 = 10 seconds
+                connection_timeout = 100  # 100 * 0.1 = 10 seconds
+                for _ in range(connection_timeout):
                     if self._connectionStatus != API_DISCONNECTED:
                         break
                     await asyncio.sleep(0.1)
                 
                 if self._connectionStatus == API_AUTHENTICATED:
                     _LOGGER.info("Reconnection successful after %d attempts", self._reconnect_attempts)
+                    self._reconnect_attempts = 0  # Reset counter on successful connection
                     return
                 else:
                     _LOGGER.warning("Reconnection attempt #%d failed", self._reconnect_attempts)
+            else:
+                _LOGGER.info("Connection restored while waiting to reconnect")
+                self._reconnect_attempts = 0
+                return
         
         if self._reconnect_attempts >= self._max_reconnect_attempts:
             _LOGGER.error("Maximum reconnection attempts (%d) reached, giving up", self._max_reconnect_attempts)
             self._send_error_callback("Maximum reconnection attempts reached")
+        
+        _LOGGER.debug("Auto-reconnect task finished")
 
     async def _wait_for_mode_and_power_on(self, expected_mode):
         """Wait for mode to be set correctly, then power on the device."""
