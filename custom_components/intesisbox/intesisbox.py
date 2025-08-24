@@ -7,6 +7,7 @@ from asyncio import BaseTransport, ensure_future
 from collections.abc import Callable
 import logging
 import time
+import random
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,6 +58,12 @@ class IntesisBox(asyncio.Protocol):
         self._firmversion: str | None = None
         self._rssi: int | None = None
         self._eventLoop = loop
+        self._reconnect_attempts = 0
+        self._max_reconnect_attempts = 10
+        self._reconnect_task: asyncio.Task | None = None
+        self._keep_alive_task: asyncio.Task | None = None
+        self._poll_status_task: asyncio.Task | None = None
+        self._poll_ambtemp_task: asyncio.Task | None = None
 
         # Limits
         self._operation_list: list[str] = []
@@ -74,21 +81,25 @@ class IntesisBox(asyncio.Protocol):
 
     async def keep_alive(self):
         """Send a keepalive command to reset its watchdog timer."""
-        ping_count = 0
+        consecutive_failures = 0
         while True:
             if self.is_connected:
-                _LOGGER.debug("Sending PING")
-                self._write("PING")
-                await asyncio.sleep(10)
+                try:
+                    _LOGGER.debug("Sending PING")
+                    self._write("PING")
+                    consecutive_failures = 0
+                    await asyncio.sleep(50)  # Send PING every 50 seconds (within 60-second requirement)
+                except Exception as e:
+                    _LOGGER.error("Error sending PING: %s", e)
+                    consecutive_failures += 1
+                    if consecutive_failures >= 3:
+                        _LOGGER.error("PING failed 3 consecutive times, triggering reconnection")
+                        await self._trigger_reconnection()
+                        consecutive_failures = 0
+                    await asyncio.sleep(10)
             else:
-              if ping_count >= 10:
-                _LOGGER.error("Ping failed 10 times")
-                ping_count = 0
-                await asyncio.sleep(5) 
-              else:
                 _LOGGER.debug("Not connected, skipping PING")
-                ping_count = ping_count + 1
-                await asyncio.sleep(5)  # Wait 5 seconds before retrying
+                await asyncio.sleep(10)  # Check connection status more frequently when disconnected
             
     async def poll_ambtemp(self):
         """Retrieve Ambient Temperature to prevent integration timeouts."""
@@ -138,9 +149,8 @@ class IntesisBox(asyncio.Protocol):
                 if cmd == "ID":
                     self._parse_id_received(args)
                     self._connectionStatus = API_AUTHENTICATED
-                    _ = asyncio.ensure_future(self.poll_status())
-                    _ = asyncio.ensure_future(self.poll_ambtemp())
-                    _ = asyncio.ensure_future(self.keep_alive())
+                    self._reconnect_attempts = 0  # Reset reconnection attempts on successful connection
+                    self._start_background_tasks()
                 elif cmd == "CHN,1":
                     self._parse_change_received(args)
                     statusChanged = True
@@ -210,9 +220,18 @@ class IntesisBox(asyncio.Protocol):
     def connection_lost(self, exc):
         """Asyncio callback for a lost TCP connection."""
         self._connectionStatus = API_DISCONNECTED
-        _LOGGER.info("The server closed the connection, try reconnection")
-        self._transport.close()
+        _LOGGER.info("The server closed the connection, will attempt reconnection")
+        if self._transport:
+            self._transport.close()
         _LOGGER.debug("Transport closed")
+        
+        # Cancel running tasks
+        self._cancel_tasks()
+        
+        # Trigger automatic reconnection
+        if not self._reconnect_task or self._reconnect_task.done():
+            self._reconnect_task = asyncio.create_task(self._auto_reconnect())
+        
         self._send_update_callback()
     
     def connect(self):
@@ -239,7 +258,8 @@ class IntesisBox(asyncio.Protocol):
                 self._connectionStatus = API_DISCONNECTED
         elif self._connectionStatus == API_CONNECTING:
             _LOGGER.warning("connect() called but already connecting")
-            if self._transport.is_closing():
+            # Remove race condition - check transport exists and is valid
+            if self._transport and self._transport.is_closing():
                 _LOGGER.info("Socket is closing while trying to connect. Force reconnection")
                 self._connectionStatus = API_DISCONNECTED
                 self._transport.close()
@@ -249,7 +269,9 @@ class IntesisBox(asyncio.Protocol):
     def stop(self):
         """Public method for shutting down connectivity with the envisalink."""
         self._connectionStatus = API_DISCONNECTED
-        self._transport.close()
+        self._cancel_tasks()
+        if self._transport:
+            self._transport.close()
 
     async def poll_status(self, sendcallback=False):
         """Periodically poll for updates since the controllers don't always update reliably."""
@@ -280,7 +302,7 @@ class IntesisBox(asyncio.Protocol):
     def _set_value(self, uid: str, value: str | int) -> None:
         """Change a setting on the thermostat."""
         try:
-            asyncio.run(self._writeasync(f"SET,1:{uid},{value}"))
+            asyncio.create_task(self._writeasync(f"SET,1:{uid},{value}"))
         except Exception as e:
             _LOGGER.error("%s Exception. %s / %s", type(e), e.args, e)
 
@@ -292,22 +314,7 @@ class IntesisBox(asyncio.Protocol):
             self._set_value(FUNCTION_MODE, mode)
         if not self.is_on:
             """Check to ensure in correct mode before turning on"""
-            retry = 30
-            while self.mode != mode and retry > 0:
-                _LOGGER.debug(
-                    f"Waiting for MODE to return {mode}, currently {str(self.mode)}"
-                )
-                _LOGGER.debug(f"Retry attempt = {retry}")
-                asyncio.run(self._writeasync("GET,1:MODE"))
-                retry -= 1
-            else:
-                if retry != 0:
-                    _LOGGER.debug(
-                        f"MODE confirmed now {str(self.mode)}, proceed to Power On"
-                    )
-                    self.set_power_on()
-                else:
-                    _LOGGER.error("Cannot set Intesisbox mode giving up...")
+            asyncio.create_task(self._wait_for_mode_and_power_on(mode))
 
     def set_mode_dry(self):
         """Public method to set device to dry asynchronously."""
@@ -453,3 +460,87 @@ class IntesisBox(asyncio.Protocol):
     def add_error_callback(self, method):
         """Public method to add a callback subscriber."""
         self._errorCallbacks.append(method)
+
+    def _cancel_tasks(self):
+        """Cancel all background tasks."""
+        tasks_to_cancel = [
+            self._keep_alive_task,
+            self._poll_status_task, 
+            self._poll_ambtemp_task,
+            self._reconnect_task
+        ]
+        
+        for task in tasks_to_cancel:
+            if task and not task.done():
+                task.cancel()
+                
+        # Reset task references
+        self._keep_alive_task = None
+        self._poll_status_task = None
+        self._poll_ambtemp_task = None
+
+    def _start_background_tasks(self):
+        """Start all background tasks after successful connection."""
+        self._cancel_tasks()  # Cancel any existing tasks first
+        
+        self._poll_status_task = asyncio.create_task(self.poll_status())
+        self._poll_ambtemp_task = asyncio.create_task(self.poll_ambtemp())
+        self._keep_alive_task = asyncio.create_task(self.keep_alive())
+
+    async def _trigger_reconnection(self):
+        """Trigger a reconnection by simulating connection loss."""
+        _LOGGER.warning("Triggering reconnection due to communication failure")
+        if self._transport:
+            self._transport.close()
+
+    async def _auto_reconnect(self):
+        """Automatically attempt to reconnect with exponential backoff."""
+        while self._connectionStatus == API_DISCONNECTED and self._reconnect_attempts < self._max_reconnect_attempts:
+            self._reconnect_attempts += 1
+            
+            # Calculate exponential backoff with jitter (1, 2, 4, 8, 16, 32, 60, 60, 60, 60 seconds)
+            base_delay = min(2 ** (self._reconnect_attempts - 1), 60)
+            jitter = random.uniform(0.5, 1.5)
+            delay = base_delay * jitter
+            
+            _LOGGER.info("Attempting reconnection #%d in %.1f seconds", self._reconnect_attempts, delay)
+            await asyncio.sleep(delay)
+            
+            if self._connectionStatus == API_DISCONNECTED:
+                _LOGGER.info("Reconnection attempt #%d", self._reconnect_attempts)
+                self.connect()
+                
+                # Wait up to 10 seconds for connection to establish
+                for _ in range(100):  # 100 * 0.1 = 10 seconds
+                    if self._connectionStatus != API_DISCONNECTED:
+                        break
+                    await asyncio.sleep(0.1)
+                
+                if self._connectionStatus == API_AUTHENTICATED:
+                    _LOGGER.info("Reconnection successful after %d attempts", self._reconnect_attempts)
+                    return
+                else:
+                    _LOGGER.warning("Reconnection attempt #%d failed", self._reconnect_attempts)
+        
+        if self._reconnect_attempts >= self._max_reconnect_attempts:
+            _LOGGER.error("Maximum reconnection attempts (%d) reached, giving up", self._max_reconnect_attempts)
+            self._send_error_callback("Maximum reconnection attempts reached")
+
+    async def _wait_for_mode_and_power_on(self, expected_mode):
+        """Wait for mode to be set correctly, then power on the device."""
+        retry = 30
+        while self.mode != expected_mode and retry > 0:
+            _LOGGER.debug(
+                f"Waiting for MODE to return {expected_mode}, currently {str(self.mode)}"
+            )
+            _LOGGER.debug(f"Retry attempt = {retry}")
+            await self._writeasync("GET,1:MODE")
+            retry -= 1
+        
+        if retry != 0:
+            _LOGGER.debug(
+                f"MODE confirmed now {str(self.mode)}, proceed to Power On"
+            )
+            self.set_power_on()
+        else:
+            _LOGGER.error("Cannot set Intesisbox mode giving up...")
