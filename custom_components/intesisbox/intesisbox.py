@@ -499,8 +499,8 @@ class IntesisBox(asyncio.Protocol):
         while self._connectionStatus == API_DISCONNECTED and self._reconnect_attempts < self._max_reconnect_attempts:
             self._reconnect_attempts += 1
             
-            # Calculate exponential backoff with jitter (1, 2, 4, 8, 16, 32, 60, 60, 60, 60 seconds)
-            base_delay = min(2 ** (self._reconnect_attempts - 1), 60)
+            # Calculate exponential backoff with jitter (2, 4, 8, 16, 32, 60, 60, 60, 60 seconds)
+            base_delay = min(2 ** (self._reconnect_attempts), 60)
             jitter = random.uniform(0.5, 1.5)
             delay = base_delay * jitter
             
@@ -560,3 +560,4 @@ class IntesisBox(asyncio.Protocol):
             self.set_power_on()
         else:
             _LOGGER.error("Cannot set Intesisbox mode giving up...")
+
